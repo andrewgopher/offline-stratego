@@ -81,7 +81,7 @@ struct ChallengeSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 420)
+        .sheetLayout(width: 420)
     }
 }
 
@@ -106,6 +106,18 @@ struct IncomingInviteView: View {
                     Label(saved.hasStarted ? "\(saved.moves.count) moves played · \(saved.timeControl.label)" : "Still setting up · \(saved.timeControl.label)",
                           systemImage: "clock")
                 }
+            case .teamChallenge(let challenge):
+                Text("\(invite.from.name) invites you to a 2v2 game").font(.title2.bold())
+                TeamSeatsSummary(challenge: challenge, localPlayerID: model.playerID)
+                Label(challenge.timeControl.displayName, systemImage: "clock")
+            case .teamJoin:
+                Text("\(invite.from.name) wants to resume your 2v2 game").font(.title2.bold())
+                if let saved = invite.savedTeamGame {
+                    TeamSeatsSummary(challenge: saved.challenge, localPlayerID: model.playerID)
+                    Label(saved.hasStarted ? "\(saved.turnCount) turns played · \(saved.challenge.timeControl.label)"
+                                           : "Still setting up · \(saved.challenge.timeControl.label)",
+                          systemImage: "clock")
+                }
             }
 
             TimelineView(.periodic(from: Date(), by: 1)) { context in
@@ -124,7 +136,7 @@ struct IncomingInviteView: View {
             }
         }
         .padding(24)
-        .frame(width: 380)
+        .sheetLayout(width: 380)
         .interactiveDismissDisabled()
     }
 }

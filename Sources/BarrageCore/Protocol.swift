@@ -2,7 +2,8 @@ import Foundation
 
 /// Bump when the wire format changes incompatibly; peers with a different version are ignored.
 public enum Wire {
-    public static let protocolVersion = 1
+    /// 2: adds the 2v2 mode (team invitations and messages).
+    public static let protocolVersion = 2
 
     public static func encode<T: Encodable>(_ value: T) throws -> Data {
         try JSONEncoder().encode(value)
@@ -102,6 +103,10 @@ public struct Challenge: Codable, Hashable {
 public enum Invitation: Codable, Hashable {
     case challenge(Challenge)
     case resume(gameID: UUID, player: PlayerInfo)
+    /// 2v2: the host invites one of the three other players.
+    case teamChallenge(TeamChallenge)
+    /// 2v2: links between the players of a table (also used to resume a saved 2v2 game).
+    case teamJoin(gameID: UUID, player: PlayerInfo)
 }
 
 public struct InvitationEnvelope: Codable, Hashable {

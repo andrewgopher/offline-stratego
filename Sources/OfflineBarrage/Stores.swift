@@ -93,3 +93,41 @@ final class SetupStore {
         }
     }
 }
+
+/// Saves each 2v2 game as JSON in ~/Library/Application Support/OfflineBarrage/TeamGames.
+///
+/// A saved 2v2 game holds our own ranks (every commitment epoch) and our partner's ranks, but
+/// only commitments and revealed ranks of the opponents.
+final class TeamGameStore {
+    let directory: URL
+
+    init() {
+        directory = AppEnvironment.supportDirectory.appendingPathComponent("TeamGames", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func loadAll() -> [TeamSnapshot] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        return files
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url in try? Wire.decode(TeamSnapshot.self, from: Data(contentsOf: url)) }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func save(_ snapshot: TeamSnapshot) {
+        do {
+            let data = try Wire.encode(snapshot)
+            try data.write(to: url(for: snapshot.gameID), options: .atomic)
+        } catch {
+            NSLog("Offline Barrage: could not save 2v2 game: \(error.localizedDescription)")
+        }
+    }
+
+    func delete(_ gameID: UUID) {
+        try? FileManager.default.removeItem(at: url(for: gameID))
+    }
+
+    private func url(for gameID: UUID) -> URL {
+        directory.appendingPathComponent("\(gameID.uuidString).json")
+    }
+}

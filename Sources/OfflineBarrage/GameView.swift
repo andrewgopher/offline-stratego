@@ -3,10 +3,15 @@ import SwiftUI
 
 struct GameView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.compactLayout) private var compact
 
     var body: some View {
         if let match = model.match {
-            GameLayout(match: match)
+            if compact {
+                CompactGameLayout(match: match)
+            } else {
+                GameLayout(match: match)
+            }
         } else {
             VStack(spacing: 12) {
                 ProgressView()
@@ -39,6 +44,20 @@ private struct GameLayout: View {
                 .frame(width: 340)
         }
         .padding(20)
+    }
+
+    private var board: some View {
+        SoloBoard(match: match)
+    }
+}
+
+/// The 1v1 board: the setup board before the game, then the playing board.
+private struct SoloBoard: View {
+    @EnvironmentObject private var model: AppModel
+    let match: Match
+
+    var body: some View {
+        board
     }
 
     @ViewBuilder
@@ -82,12 +101,95 @@ private struct GameLayout: View {
     }
 }
 
+// MARK: - iPhone layout
+
+/// The 1v1 screen stacked for a phone: the board between the two player bars, and a tabbed
+/// panel underneath instead of the side panel.
+private struct CompactGameLayout: View {
+    @EnvironmentObject private var model: AppModel
+    let match: Match
+    @State private var tab: PanelTab = .game
+    @State private var chat = UnreadChat()
+
+    private var displayedPosition: Position? {
+        match.game.map { $0.positions[model.displayedPly] }
+    }
+
+    private var tabs: [(tab: PanelTab, title: String)] {
+        let unread = chat.unread(match.chat) { $0.senderID == model.playerID }
+        if match.phase == .setup {
+            return [(.game, "Setup"), (.chat, UnreadChat.title(unread))]
+        }
+        return [(.game, "Game"), (.moves, "Moves"), (.chat, UnreadChat.title(unread))]
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 6) {
+                CompactTopBar(onBack: { model.leaveGame() },
+                              detail: match.timeControl.isUnlimited ? "No clock" : match.timeControl.label) {
+                    StatusCard(match: match, compact: true)
+                }
+                PlayerBar(match: match, side: match.opponentSide, position: displayedPosition, compact: true)
+                SoloBoard(match: match)
+                    .frame(maxWidth: .infinity)
+                    .layoutPriority(1)
+                PlayerBar(match: match, side: match.localSide, position: displayedPosition, compact: true)
+                PromptsView(match: match)
+                PanelTabPicker(selection: $tab, tabs: tabs)
+                panel
+                    .frame(minHeight: max(150, geometry.size.height * (geometry.size.width > 600 ? 0.3 : 0.22)), maxHeight: .infinity, alignment: .top)
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 4)
+        }
+        .onAppear { chat.markRead(match.chat.count) }
+        .onChange(of: match.chat.count) { count in
+            if tab == .chat { chat.markRead(count) }
+        }
+        .onChange(of: tab) { tab in
+            if tab == .chat { chat.markRead(match.chat.count) }
+        }
+        .onChange(of: match.phase) { phase in
+            if phase == .setup && tab == .moves { tab = .game }
+        }
+    }
+
+    @ViewBuilder
+    private var panel: some View {
+        switch tab {
+        case .moves:
+            VStack(spacing: 8) {
+                MoveListView(match: match)
+                NavigationButtons(match: match)
+            }
+        case .chat:
+            ChatView(match: match, showsTitle: false)
+        case .game, .otherBoard:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if match.phase == .setup {
+                        SetupPanel(isLocalReady: match.isLocalReady, compact: true)
+                    } else {
+                        StatusCard(match: match)
+                        ActionButtons(match: match)
+                        BadgeLegend()
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+}
+
 // MARK: - Player bar & clock
 
 private struct PlayerBar: View {
     let match: Match
     let side: Side
     let position: Position?
+    /// iPhone: smaller pieces and clock, so it all fits in one line.
+    var compact = false
 
     private var isLocal: Bool { side == match.localSide }
     private var isTurn: Bool {
@@ -102,25 +204,26 @@ private struct PlayerBar: View {
             Text(match.player(side).name)
                 .font(.headline)
                 .lineLimit(1)
-            if isLocal {
+            if isLocal && !compact {
                 Text("(you)").foregroundColor(.secondary)
             }
             if match.phase == .setup {
                 readiness
             } else if let position = position {
-                ArmyRoster(side: side, lost: lostRanks(position))
-                    .padding(.leading, 6)
+                ArmyRoster(side: side, lost: lostRanks(position), size: compact ? 15 : 22)
+                    .padding(.leading, compact ? 0 : 6)
+                    .layoutPriority(1)
             }
-            Spacer()
+            Spacer(minLength: compact ? 2 : 8)
             if let clock = match.clock {
-                ClockView(clock: clock, side: side, isTurn: isTurn)
+                ClockView(clock: clock, side: side, isTurn: isTurn, fontSize: compact ? 17 : 22)
             } else if isTurn {
                 Text("to move")
                     .font(.caption.bold())
                     .foregroundColor(.accentColor)
             }
         }
-        .frame(height: 34)
+        .frame(height: compact ? 28 : 34)
     }
 
     @ViewBuilder
@@ -141,10 +244,11 @@ private struct PlayerBar: View {
     }
 }
 
-private struct ClockView: View {
+struct ClockView: View {
     let clock: GameClock
     let side: Side
     let isTurn: Bool
+    var fontSize: CGFloat = 22
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 0.1, paused: clock.running != side)) { context in
@@ -152,8 +256,8 @@ private struct ClockView: View {
             let running = clock.running == side
             let low = remaining < 20
             Text(ClockView.format(remaining))
-                .font(.system(size: 22, weight: .semibold, design: .monospaced))
-                .padding(.horizontal, 12)
+                .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, fontSize * 0.55)
                 .padding(.vertical, 3)
                 .foregroundColor(running ? .white : .primary)
                 .background(
@@ -198,7 +302,7 @@ private struct SidePanel: View {
             StatusCard(match: match)
             PromptsView(match: match)
             if match.phase == .setup {
-                SetupPanel(match: match)
+                SetupPanel(isLocalReady: match.isLocalReady)
                 Spacer(minLength: 0)
             } else {
                 MoveListView(match: match)
@@ -217,8 +321,24 @@ private struct SidePanel: View {
 private struct StatusCard: View {
     @EnvironmentObject private var model: AppModel
     let match: Match
+    /// The one-line version for the iPhone's top bar.
+    var compact = false
 
     var body: some View {
+        if compact {
+            StatusPill(icon: icon, title: match.isOver ? shortResult : title, tint: tint)
+        } else {
+            card
+        }
+    }
+
+    private var shortResult: String {
+        guard let result = match.result else { return "Game over" }
+        guard let winner = result.winner else { return "Draw" }
+        return winner == match.localSide ? "You won" : "You lost"
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
@@ -290,7 +410,7 @@ private struct StatusCard: View {
         }
         switch model.linkStatus {
         case .connecting:
-            return "Waiting for \(opponentName)'s Mac to answer."
+            return "Waiting for \(opponentName) to answer."
         case .reconnecting:
             return opponentNearby
                 ? "Clocks are paused. Trying to reach \(opponentName) again…"
@@ -308,7 +428,7 @@ private struct StatusCard: View {
                 return match.isOpponentReady ? nil : "Your setup is locked in. The game starts when \(opponentName) is ready."
             case .playing:
                 if match.stuckSide != nil { return "Revealing both armies to settle the result…" }
-                if match.isAwaitingBattle { return "Waiting for \(opponentName)'s Mac to reveal the defender." }
+                if match.isAwaitingBattle { return "Waiting for \(opponentName)'s app to reveal the defender." }
                 return nil
             case .over:
                 return nil
@@ -370,7 +490,7 @@ private struct PromptsView: View {
     }
 }
 
-private struct PromptRow: View {
+struct PromptRow: View {
     let text: String
     let accept: () -> Void
     let decline: () -> Void
@@ -390,7 +510,7 @@ private struct PromptRow: View {
     }
 }
 
-private struct InfoRow: View {
+struct InfoRow: View {
     let text: String
 
     var body: some View {
@@ -403,21 +523,47 @@ private struct InfoRow: View {
 
 // MARK: - Setup
 
-private struct SetupPanel: View {
+struct SetupPanel: View {
     @EnvironmentObject private var model: AppModel
-    let match: Match
+    let isLocalReady: Bool
+    /// iPhone: the buttons first, so Ready is visible without scrolling.
+    var compact = false
     @State private var naming = false
 
-    var body: some View {
-        let draft = model.setupDraft
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Your army").font(.headline)
-            Text("Put all 8 pieces anywhere on your four back rows. Drag them from the tray, or click a piece and then a square. Drag a piece off the board to take it back.")
-                .font(.callout)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+    private var instructions: String {
+        "Put all 8 pieces anywhere on your four back rows. Drag them from the tray, or \(Device.click) a piece and then a square. Drag a piece off the board to take it back."
+    }
 
-            HStack {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if compact {
+                buttons
+                readyButton
+                instructionsText
+                RankLegend()
+            } else {
+                Text("Your army").font(.headline)
+                instructionsText
+                buttons
+                RankLegend()
+                readyButton
+            }
+        }
+        .sheet(isPresented: $naming) {
+            SaveSetupSheet { name in model.saveSetup(named: name) }
+        }
+    }
+
+    private var instructionsText: some View {
+        Text(instructions)
+            .font(.callout)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var buttons: some View {
+        let draft = model.setupDraft
+        return HStack {
                 Button { model.randomizeSetup() } label: { Label("Random", systemImage: "shuffle") }
                 Button { model.clearSetup() } label: { Label("Clear", systemImage: "arrow.uturn.backward") }
                     .disabled(draft.isEmpty)
@@ -444,13 +590,15 @@ private struct SetupPanel: View {
                 .fixedSize()
             }
             .disabled(!model.canEditSetup)
+    }
 
-            RankLegend()
-
+    private var readyButton: some View {
+        let draft = model.setupDraft
+        return VStack(alignment: .leading, spacing: 12) {
             Button {
                 model.lockSetup()
             } label: {
-                Label(match.isLocalReady ? "Locked In" : "Ready", systemImage: match.isLocalReady ? "lock.fill" : "checkmark")
+                Label(isLocalReady ? "Locked In" : "Ready", systemImage: isLocalReady ? "lock.fill" : "checkmark")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -464,14 +612,11 @@ private struct SetupPanel: View {
                     .foregroundColor(.secondary)
             }
         }
-        .sheet(isPresented: $naming) {
-            SaveSetupSheet { name in model.saveSetup(named: name) }
-        }
     }
 }
 
 /// What each piece does, for reference during setup.
-private struct RankLegend: View {
+struct RankLegend: View {
     private static let rows: [(Rank, String)] = [
         (.marshal, "Strongest, but loses to a Spy that attacks it"),
         (.general, "Second strongest"),
@@ -508,7 +653,7 @@ private struct SaveSetupSheet: View {
             Text("Save Setup").font(.title3.bold())
             TextField("Name, e.g. \u{201C}Flag in the corner\u{201D}", text: $name)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 300)
+                .frame(minWidth: 260, maxWidth: 300)
                 .onSubmit(save)
             Text("Saved setups work for either color.")
                 .font(.caption)
@@ -644,7 +789,7 @@ private struct NavigationButtons: View {
             }
             if match.isOver && match.hasFullReveal {
                 Toggle("Show every piece's rank", isOn: $model.showAllPieces)
-                    .toggleStyle(.checkbox)
+                    .checkboxToggleStyle()
             }
         }
     }
@@ -706,11 +851,14 @@ private struct ActionButtons: View {
 private struct ChatView: View {
     @EnvironmentObject private var model: AppModel
     let match: Match
+    var showsTitle = true
     @State private var draft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Chat").font(.headline)
+            if showsTitle {
+                Text("Chat").font(.headline)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
@@ -747,7 +895,7 @@ private struct ChatView: View {
     }
 }
 
-private struct ChatBubble: View {
+struct ChatBubble: View {
     let message: ChatMessage
     let isMine: Bool
     let senderName: String

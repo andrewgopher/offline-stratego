@@ -29,7 +29,7 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Offline Barrage uses peer-to-peer Wi-Fi to find and play against nearby Macs. No internet or Wi-Fi network is needed.</string>
+	<string>Offline Barrage uses peer-to-peer Wi-Fi to find and play with nearby Macs, iPhones and iPads. No internet or Wi-Fi network is needed.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_offline-barrage._tcp</string>

@@ -1,6 +1,9 @@
-import AppKit
 import BarrageCore
+#if os(macOS)
 import CoreWLAN
+#else
+import UIKit
+#endif
 import Foundation
 import MultipeerConnectivity
 import PeerKit
@@ -10,6 +13,8 @@ struct NearbyPlayer: Identifiable, Hashable {
     let name: String
     let peerID: MCPeerID
     let isCompatible: Bool
+    /// "mac", "iphone" or "ipad" (nil from builds that don't say).
+    var device: String? = nil
 }
 
 enum SideChoice: String, CaseIterable, Identifiable {
@@ -27,6 +32,8 @@ enum SideChoice: String, CaseIterable, Identifiable {
 enum Screen {
     case lobby
     case game
+    /// A 2v2 table (see `AppModel.teamTable`).
+    case teamGame
 }
 
 enum LinkStatus: Equatable {
@@ -48,6 +55,9 @@ struct IncomingInvite: Identifiable {
     /// Our copy of the game, for resume requests.
     let savedGame: MatchSnapshot?
     let reply: (Bool) -> Void
+    /// 2v2: the inviting Mac, and our copy of the game for resume requests.
+    var peerID: MCPeerID? = nil
+    var savedTeamGame: TeamSnapshot? = nil
 }
 
 struct OutgoingInvite {
@@ -87,12 +97,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var savedGames: [MatchSnapshot] = []
     @Published private(set) var wifiPoweredOff = false
 
-    @Published private(set) var screen: Screen = .lobby
+    @Published internal(set) var screen: Screen = .lobby
     @Published private(set) var match: Match? = nil {
         didSet {
             if oldValue?.gameID != match?.gameID { prepareSetupDraft() }
         }
     }
+    /// The 2v2 table on screen (instead of `match`).
+    @Published internal(set) var teamTable: TeamTable? = nil
+    @Published internal(set) var savedTeamGames: [TeamSnapshot] = []
+    /// Drives the "new 2v2 game" sheet.
+    @Published var showingTeamSheet = false
     @Published private(set) var linkStatus: LinkStatus = .offline
     @Published private(set) var opponentLeftOnPurpose = false
     /// The move number being viewed, or nil to follow the live position.
@@ -101,7 +116,7 @@ final class AppModel: ObservableObject {
     @Published var showAllPieces = true
 
     /// The setup being arranged (before it is locked in).
-    @Published private(set) var setupDraft = Setup(side: .red)
+    @Published internal(set) var setupDraft = Setup(side: .red)
     @Published private(set) var savedSetups: [SavedSetup] = []
 
     /// The battle card currently shown over the board.
@@ -125,8 +140,10 @@ final class AppModel: ObservableObject {
     let launchedAt = Date()
 
     private let defaults = AppEnvironment.defaults
-    private let peerService: PeerService
+    let peerService: PeerService
     private let store = GameStore()
+    let teamStore = TeamGameStore()
+    var declinedTeamResumes: [UUID: Date] = [:]
     private let setupStore = SetupStore()
     private var timer: Timer?
     private var bannerExpiry: Date?
@@ -138,6 +155,8 @@ final class AppModel: ObservableObject {
     private var lastReconnectAttempt: Date?
     private var reconnectFailures = 0
     private var declinedResumes: [UUID: Date] = [:]
+    /// iOS: the app went to the background and its links were dropped.
+    private var linksSuspended = false
 
     init() {
         if let id = defaults.string(forKey: Keys.playerID) {
@@ -150,9 +169,10 @@ final class AppModel: ObservableObject {
         let name = PeerService.sanitize(defaults.string(forKey: Keys.playerName) ?? AppModel.defaultPlayerName())
         playerName = name
         soundsEnabled = defaults.object(forKey: Keys.sounds) as? Bool ?? true
-        peerService = PeerService(displayName: name, playerID: playerID, defaults: defaults)
+        peerService = PeerService(displayName: name, playerID: playerID, deviceKind: Device.kind, defaults: defaults)
 
         savedGames = store.loadAll()
+        savedTeamGames = teamStore.loadAll()
         savedSetups = setupStore.load()
         peerService.delegate = self
         if !AppModel.isSnapshotMode { peerService.start() }
@@ -173,11 +193,7 @@ final class AppModel: ObservableObject {
     }
 
     static func defaultPlayerName() -> String {
-        var name = Host.current().localizedName ?? "Player"
-        let fullName = NSFullUserName().trimmingCharacters(in: .whitespaces)
-        if let first = fullName.split(separator: " ").first, !first.isEmpty {
-            name = String(first)
-        }
+        var name = Device.defaultPlayerName()
         if let profile = AppEnvironment.profile { name += " (\(profile))" }
         return name
     }
@@ -216,12 +232,14 @@ final class AppModel: ObservableObject {
 
     /// The setup can still be rearranged: the game hasn't started and we haven't locked in.
     var canEditSetup: Bool {
+        if let table = teamTable { return table.match.phase == .setup && !table.match.isLocalReady }
         guard let match = match else { return false }
         return match.phase == .setup && !match.isLocalReady
     }
 
     var canLockSetup: Bool {
-        canEditSetup && setupDraft.isComplete && linkStatus == .connected
+        if let table = teamTable { return canEditSetup && setupDraft.isComplete && table.isLive }
+        return canEditSetup && setupDraft.isComplete && linkStatus == .connected
     }
 
     /// Ranks are shown for every piece: after the game, once both armies are revealed.
@@ -276,6 +294,9 @@ final class AppModel: ObservableObject {
             }
             newMatch = restored
             isResume = true
+        case .teamChallenge, .teamJoin:
+            acceptTeamInvite(invite)
+            return
         }
         closeCurrentGame(notifyOpponent: true)
         outgoingInvite = nil
@@ -292,6 +313,9 @@ final class AppModel: ObservableObject {
         guard let invite = incomingInvite else { return }
         if case .resume(let gameID, _) = invite.invitation {
             declinedResumes[gameID] = Date()  // don't keep re-asking for a while
+        }
+        if case .teamJoin(let gameID, _) = invite.invitation {
+            declinedTeamResumes[gameID] = Date()
         }
         invite.reply(false)
         incomingInvite = nil
@@ -376,7 +400,11 @@ final class AppModel: ObservableObject {
         guard canLockSetup else { return }
         let draft = setupDraft
         let now = Date()
-        mutateMatch { $0.lockSetup(draft, at: now) }
+        if let table = teamTable {
+            table.lockSetup(draft)
+        } else {
+            mutateMatch { $0.lockSetup(draft, at: now) }
+        }
         if let data = try? JSONEncoder().encode(draft.slots) {
             defaults.set(data, forKey: Keys.lastSetup)
         }
@@ -384,13 +412,17 @@ final class AppModel: ObservableObject {
 
     private func prepareSetupDraft() {
         guard let match = match else { return }
-        if let locked = match.localSetup {
+        prepareSetupDraft(side: match.localSide, locked: match.localSetup)
+    }
+
+    func prepareSetupDraft(side: Side, locked: Setup?) {
+        if let locked = locked {
             setupDraft = locked
         } else if let data = defaults.data(forKey: Keys.lastSetup),
                   let slots = try? JSONDecoder().decode([SetupSlot].self, from: data) {
-            setupDraft = Setup(side: match.localSide, slots: slots)
+            setupDraft = Setup(side: side, slots: slots)
         } else {
-            setupDraft = Setup(side: match.localSide)
+            setupDraft = Setup(side: side)
         }
     }
 
@@ -461,6 +493,13 @@ final class AppModel: ObservableObject {
         sendResumeInvite(to: peer, match: match)
     }
 
+    /// Closes any 1v1 game before a 2v2 table opens.
+    func leaveSoloGame() {
+        guard match != nil || outgoingInvite != nil else { return }
+        closeCurrentGame(notifyOpponent: true)
+        resetViewState()
+    }
+
     func leaveGame() {
         closeCurrentGame(notifyOpponent: true)
         resetViewState()
@@ -496,6 +535,7 @@ final class AppModel: ObservableObject {
     // MARK: - App lifecycle
 
     func prepareForTermination() {
+        teamTable?.prepareForTermination()
         if linkStatus == .connected {
             send(.leaving)
             RunLoop.current.run(until: Date().addingTimeInterval(0.3))
@@ -508,6 +548,61 @@ final class AppModel: ObservableObject {
         peerService.disconnect()
         peerService.stopDiscovery()
     }
+
+    #if os(iOS)
+    /// iOS suspends a backgrounded app and MultipeerConnectivity drops its links. Rather than let
+    /// the other players find out from a timeout, drop them right away (as a lost connection, not
+    /// as leaving: the game stays open, clocks pause, and it reconnects on return).
+    func didEnterBackground() {
+        guard !linksSuspended else { return }
+        linksSuspended = true
+        let task = UIApplication.shared.beginBackgroundTask(withName: "Pause games")
+        let now = Date()
+        incomingInvite = nil  // declines it
+        if isWaitingForChallengeAnswer { cancelChallenge() }
+        if let table = teamTable {
+            if table.match.isConfirmed {
+                table.suspendLinks()
+            } else {
+                // Nobody can wait for a game that hasn't been agreed yet.
+                table.leave()
+                closeTeamTable(banner: "The 2v2 game was called off because Offline Barrage went to the background before it started.")
+            }
+        }
+        suspendSoloLink(at: now)
+        peerService.stopDiscovery()
+        if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+    }
+
+    /// Back in the foreground: look for the other players again; open games reconnect by themselves.
+    func willEnterForeground() {
+        guard linksSuspended else { return }
+        linksSuspended = false
+        peerService.start()
+    }
+
+    private func suspendSoloLink(at now: Date) {
+        guard var current = match, linkStatus == .connected || linkStatus == .connecting else { return }
+        outgoingInvite = nil
+        peerService.disconnect()
+        rematchOfferIn = nil
+        rematchOfferOut = nil
+        guard linkEverConnected else {
+            // We had just accepted a challenge that never connected.
+            match = nil
+            linkStatus = .offline
+            screen = .lobby
+            return
+        }
+        current.pauseClock(at: now)
+        match = current
+        persist()
+        linkStatus = current.isOver ? .waiting : .reconnecting
+        disconnectedAt = now
+        lastReconnectAttempt = nil
+        reconnectFailures = 0
+    }
+    #endif
 
     // MARK: - Internals
 
@@ -620,6 +715,7 @@ final class AppModel: ObservableObject {
 
     private func tick() {
         let now = Date()
+        teamTable?.tick(now: now)
         if linkStatus == .connected, let match = match, !match.isOver, let clock = match.clock,
            clock.running == match.localSide, clock.remaining(match.localSide, at: now) <= 0 {
             mutateMatch { $0.checkTimeout(at: now) }
@@ -647,11 +743,14 @@ final class AppModel: ObservableObject {
         if now.timeIntervalSince(lastWiFiCheck) > 3 { checkWiFi() }
     }
 
+    /// The Mac can tell when Wi-Fi is switched off; iOS doesn't let apps check.
     private func checkWiFi() {
         lastWiFiCheck = Date()
+        #if os(macOS)
         let interfaces = CWWiFiClient.shared().interfaces() ?? []
         let off = !interfaces.isEmpty && interfaces.allSatisfy { !$0.powerOn() }
         if off != wifiPoweredOff { wifiPoweredOff = off }
+        #endif
     }
 
     private func react(to event: MatchEvent) {
@@ -700,13 +799,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func playSound(_ name: String) {
+    func playSound(_ name: String) {
         guard soundsEnabled else { return }
-        NSSound(named: NSSound.Name(name))?.play()
+        Feedback.play(name)
     }
 
-    private func requestAttention() {
-        if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+    func requestAttention() {
+        Feedback.requestAttention()
     }
 }
 
@@ -716,13 +815,14 @@ extension AppModel: PeerServiceDelegate {
     func peerService(_ service: PeerService, didUpdateNearby peers: [DiscoveredPeer]) {
         nearby = peers
             .map { NearbyPlayer(id: $0.playerID, name: $0.name, peerID: $0.peerID,
-                                isCompatible: $0.protocolVersion == Wire.protocolVersion) }
+                                isCompatible: $0.protocolVersion == Wire.protocolVersion, device: $0.deviceKind) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         attemptReconnect()
     }
 
     func peerService(_ service: PeerService, didReceiveInvitation context: Data?, from peerID: MCPeerID,
-                     reply: @escaping (Bool) -> Void) {
+                     reply answer: @escaping (InvitationAnswer) -> Void) {
+        let reply: (Bool) -> Void = { answer($0 ? .accept : .decline) }
         guard let context = context,
               let envelope = try? Wire.decode(InvitationEnvelope.self, from: context),
               envelope.protocolVersion == Wire.protocolVersion
@@ -731,7 +831,7 @@ extension AppModel: PeerServiceDelegate {
             return
         }
         let now = Date()
-        let busy = (linkStatus == .connected || linkStatus == .connecting) && match?.isOver == false
+        let busy = ((linkStatus == .connected || linkStatus == .connecting) && match?.isOver == false) || teamTable != nil
 
         switch envelope.invitation {
         case .challenge(let challenge):
@@ -780,10 +880,17 @@ extension AppModel: PeerServiceDelegate {
                                             savedGame: saved, reply: reply)
             playSound("Ping")
             requestAttention()
+
+        case .teamChallenge, .teamJoin:
+            receiveTeamInvitation(envelope.invitation, from: peerID, reply: answer)
         }
     }
 
     func peerService(_ service: PeerService, linkDidChange state: PeerLinkState, peer: MCPeerID) {
+        if let table = teamTable {
+            table.links?.linkDidChange(state, peer: peer)
+            return
+        }
         switch state {
         case .connecting: break
         case .connected: linkDidConnect()
@@ -792,6 +899,10 @@ extension AppModel: PeerServiceDelegate {
     }
 
     func peerService(_ service: PeerService, didReceive data: Data, from peerID: MCPeerID) {
+        if let table = teamTable {
+            table.links?.didReceive(data, from: peerID)
+            return
+        }
         guard let envelope = try? Wire.decode(WireEnvelope.self, from: data),
               envelope.protocolVersion == Wire.protocolVersion,
               var current = match, envelope.gameID == current.gameID

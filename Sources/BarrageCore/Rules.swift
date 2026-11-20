@@ -79,8 +79,12 @@ public enum Rules {
 
     /// The repetition rule that forbids this move, if any.
     public static func restriction(on move: Move, in game: Game) -> Restriction? {
-        if violatesTwoSquares(move, in: game) { return .twoSquares }
-        if violatesChasingRule(move, in: game) { return .chasing }
+        repetitionRestriction(on: move, in: game)
+    }
+
+    static func repetitionRestriction<H: TurnHistory>(on move: Move, in history: H) -> Restriction? {
+        if violatesTwoSquares(move, in: history) { return .twoSquares }
+        if violatesChasingRule(move, in: history) { return .chasing }
         return nil
     }
 
@@ -100,17 +104,20 @@ public enum Rules {
     /// ISF two-squares rule: no more than five consecutive moves of the same piece between the
     /// same two squares, whatever the opponent does. For Scouts, every square passed over
     /// counts, so consecutive moves that keep crossing a common edge count as shuttling.
-    static func violatesTwoSquares(_ move: Move, in game: Game) -> Bool {
-        guard let piece = game.position[move.from]?.id else { return false }
-        var recent: [MoveRecord] = []
-        for record in game.records.reversed() where record.side == piece.side {
-            recent.append(record)
-            if recent.count == maxShuttleMoves { break }
+    /// Any other turn of the same player (another piece, or a 2v2 swap) breaks the sequence.
+    static func violatesTwoSquares<H: TurnHistory>(_ move: Move, in history: H) -> Bool {
+        guard let piece = history.position[move.from]?.id else { return false }
+        var recent: [TurnSummary] = []
+        var index = history.turnCount - 1
+        while index >= 0 && recent.count < maxShuttleMoves {
+            let turn = history.turn(at: index)
+            if turn.side == piece.side { recent.append(turn) }
+            index -= 1
         }
         guard recent.count == maxShuttleMoves, recent.allSatisfy({ $0.piece == piece }) else { return false }
         var shared = move.crossedEdges
-        for record in recent {
-            shared.formIntersection(record.move.crossedEdges)
+        for turn in recent {
+            shared.formIntersection(turn.move?.crossedEdges ?? [])
             if shared.isEmpty { return false }
         }
         return true
@@ -120,28 +127,61 @@ public enum Rules {
     /// (a threat) and the opponent answered by moving that piece away (an evasion), a move that
     /// threatens it again may not recreate a position that has already occurred. Stepping the
     /// chasing piece straight back to the square it just came from is always allowed.
-    static func violatesChasingRule(_ move: Move, in game: Game) -> Bool {
-        let records = game.records
-        let count = records.count
-        let position = game.position
+    static func violatesChasingRule<H: TurnHistory>(_ move: Move, in history: H) -> Bool {
+        let count = history.turnCount
+        let position = history.position
         guard count >= 2, let mover = position[move.from], position[move.to] == nil else { return false }
-        let evasion = records[count - 1]
-        let threat = records[count - 2]
-        guard evasion.side != mover.side, threat.side == mover.side, !evasion.isAttack else { return false }
+        let evasion = history.turn(at: count - 1)
+        let threat = history.turn(at: count - 2)
+        guard evasion.side != mover.side, threat.side == mover.side, !evasion.isAttack,
+              let evader = evasion.piece, let chaser = threat.piece, let threatMove = threat.move
+        else { return false }
 
-        let afterThreat = game.positions[count - 1]
-        guard let chaserSquare = afterThreat.pieces[threat.piece]?.square,
-              let evaderSquare = afterThreat.pieces[evasion.piece]?.square,
+        let afterThreat = history.positions[count - 1]
+        guard let chaserSquare = afterThreat.pieces[chaser]?.square,
+              let evaderSquare = afterThreat.pieces[evader]?.square,
               chaserSquare.isAdjacent(to: evaderSquare),
-              let evaderNow = position.pieces[evasion.piece]?.square,
+              let evaderNow = position.pieces[evader]?.square,
               move.to.isAdjacent(to: evaderNow)
         else { return false }
 
-        if mover.id == threat.piece && move.to == threat.move.from { return false }
+        if mover.id == chaser && move.to == threatMove.from { return false }
 
         var board = position.cells
         board[move.from.index] = nil
         board[move.to.index] = mover.id
-        return game.hasOccurred(board)
+        return history.hasOccurred(board)
+    }
+}
+
+/// One turn as the repetition rules see it.
+struct TurnSummary {
+    let side: Side
+    /// The piece that moved, or nil for a turn that moved nothing (a 2v2 swap).
+    let piece: PieceID?
+    let move: Move?
+    let isAttack: Bool
+}
+
+/// What the repetition rules need from a game's history: the 1v1 `Game` and a 2v2 `TeamBoard`.
+protocol TurnHistory {
+    /// `positions[i]` is the position after `i` turns.
+    var positions: [Position] { get }
+    var turnCount: Int { get }
+    func turn(at index: Int) -> TurnSummary
+    /// Whether this exact arrangement of pieces has appeared earlier in the game.
+    func hasOccurred(_ board: [PieceID?]) -> Bool
+}
+
+extension TurnHistory {
+    var position: Position { positions[positions.count - 1] }
+}
+
+extension Game: TurnHistory {
+    var turnCount: Int { records.count }
+
+    func turn(at index: Int) -> TurnSummary {
+        let record = records[index]
+        return TurnSummary(side: record.side, piece: record.piece, move: record.move, isAttack: record.isAttack)
     }
 }

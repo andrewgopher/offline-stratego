@@ -1,12 +1,16 @@
-// Headless end-to-end check of PeerKit + the match protocol.
+// Headless end-to-end check of PeerKit + the match protocols.
 //
-// Run two copies on the same Mac (or one on each of two Macs):
+// 1v1: run two copies on the same Mac (or one on each of two Macs):
 //     PeerSmokeTest guest &
 //     PeerSmokeTest host
 // They discover each other with the same PeerService the app uses. The host (Red) sends a
 // challenge, the guest (Blue) accepts, both lock in fixed setups, and they play a short game
 // with a scout run, a lost battle and a flag capture over the real link. Both sides then
 // reveal their armies and check them. Exit status 0 means the transport and protocol worked.
+//
+// 2v2: run four copies, `team-b`, `team-c` and `team-d` first, then `team-a` (the host). They
+// link up pairwise with TableLinks, play a short game on two boards (a capture on board 1 feeds
+// a swap on board 2, then a Flag capture ends it) and check all four armies.
 
 import BarrageCore
 import Foundation
@@ -16,19 +20,19 @@ import PeerKit
 setvbuf(stdout, nil, _IOLBF, 0)
 
 let role = CommandLine.arguments.dropFirst().first ?? "host"
-let isHost = role == "host"
+let isHost = role == "host" || role == "team-a"
 let me = PlayerInfo(id: isHost ? "smoke-host" : "smoke-guest", name: isHost ? "Smoke Host" : "Smoke Guest")
+let redArmy = setup(.red, ["A4": .scout, "J4": .scout, "A1": .marshal, "B1": .general,
+                           "C1": .miner, "D1": .spy, "E1": .bomb, "F1": .flag])
+let blueArmy = setup(.blue, ["B7": .marshal, "J7": .flag, "A10": .general, "C10": .miner,
+                             "D10": .scout, "E10": .scout, "F10": .spy, "G10": .bomb])
 let script: [String] = isHost ? ["A4-A6", "A6-B6", "J4-J7"] : ["B7-B6", "B6-B5"]
 
 func setup(_ side: Side, _ placements: [String: Rank]) -> Setup {
     Setup(side: side, placements: Dictionary(uniqueKeysWithValues: placements.map { (Square(name: $0.key)!, $0.value) }))
 }
 
-let mySetup = isHost
-    ? setup(.red, ["A4": .scout, "J4": .scout, "A1": .marshal, "B1": .general,
-                   "C1": .miner, "D1": .spy, "E1": .bomb, "F1": .flag])
-    : setup(.blue, ["B7": .marshal, "J7": .flag, "A10": .general, "C10": .miner,
-                    "D10": .scout, "E10": .scout, "F10": .spy, "G10": .bomb])
+let mySetup = isHost ? redArmy : blueArmy
 
 func say(_ text: String) {
     print("[\(role)] \(text)")
@@ -69,17 +73,17 @@ final class Runner: PeerServiceDelegate {
     }
 
     func peerService(_ service: PeerService, didReceiveInvitation context: Data?, from peerID: MCPeerID,
-                     reply: @escaping (Bool) -> Void) {
+                     reply: @escaping (InvitationAnswer) -> Void) {
         guard !isHost, let context = context,
               let envelope = try? Wire.decode(InvitationEnvelope.self, from: context),
               case .challenge(let challenge) = envelope.invitation
         else {
-            reply(false)
+            reply(.decline)
             return
         }
         say("accepting challenge from \(challenge.challenger.name)")
         match = Match(challenge: challenge, accepter: me, localPlayerID: me.id, now: Date())
-        reply(true)
+        reply(.accept)
     }
 
     func peerService(_ service: PeerService, linkDidChange state: PeerLinkState, peer: MCPeerID) {
@@ -157,6 +161,10 @@ final class Runner: PeerServiceDelegate {
         say("FAIL: \(reason)")
         exitCode = 1
     }
+}
+
+if role.hasPrefix("team-") {
+    runTeamSmokeTest()
 }
 
 let runner = Runner()

@@ -138,6 +138,13 @@ struct PlayBoardView: View {
     let candidateMoves: [Move]
     let onMove: (Move) -> Void
     let onBlockedMove: (Move) -> Void
+    /// 2v2 plays without memory aids: enemy ranks never stay visible and nothing is marked.
+    var memoryAids = true
+    /// 2v2: while a reserve piece is picked, clicking one of these squares swaps it in.
+    var swapTargets: Set<Square> = []
+    var onSwap: (Square) -> Void = { _ in }
+    /// 2v2: where our partner just swapped (outlined for a moment).
+    var highlight: Square? = nil
 
     @State private var selected: Square? = nil
     @State private var dragFrom: Square? = nil
@@ -154,6 +161,7 @@ struct PlayBoardView: View {
                     BoardBackground(layout: layout, marks: marks)
                     pieces(layout)
                     targetMarkers(layout)
+                    swapMarkers(layout)
                 }
                 // Children are placed with .offset, which doesn't affect layout, so size explicitly.
                 .frame(width: side, height: side, alignment: .topLeading)
@@ -195,11 +203,17 @@ struct PlayBoardView: View {
         if let square = selected ?? dragFrom {
             result[square, default: []].insert(.selected)
         }
+        if let square = highlight {
+            result[square, default: []].insert(.battle)
+        }
         return result
     }
 
     private func token(for piece: PieceState) -> TokenModel {
         let mine = piece.side == localSide
+        guard memoryAids else {
+            return TokenModel(side: piece.side, rank: mine || revealAll ? ranks[piece.id] : nil)
+        }
         let visible = mine || piece.isRevealed || revealAll
         return TokenModel(side: piece.side, rank: visible ? ranks[piece.id] : nil,
                           showsMoved: piece.hasMoved, showsRevealed: mine && piece.isRevealed)
@@ -207,6 +221,10 @@ struct PlayBoardView: View {
 
     private func helpText(for piece: PieceState) -> String {
         let mine = piece.side == localSide
+        guard memoryAids else {
+            if let rank = token(for: piece).rank { return rank.fullName }
+            return "Hidden enemy piece"
+        }
         var parts: [String] = []
         if let rank = token(for: piece).rank {
             parts.append("\(mine ? "Your" : "Their") \(rank.fullName)")
@@ -265,15 +283,45 @@ struct PlayBoardView: View {
         .allowsHitTesting(false)
     }
 
+    private func swapMarkers(_ layout: BoardLayout) -> some View {
+        let size = layout.squareSize
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(swapTargets), id: \.self) { square in
+                ZStack(alignment: .topTrailing) {
+                    RoundedRectangle(cornerRadius: size * 0.17)
+                        .strokeBorder(Color.green, style: StrokeStyle(lineWidth: max(2, size * 0.06), dash: [size * 0.12, size * 0.08]))
+                        .frame(width: size * 0.94, height: size * 0.94)
+                        .frame(width: size, height: size)
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: size * 0.16, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: size * 0.3, height: size * 0.3)
+                        .background(Circle().fill(Color.green))
+                }
+                .frame(width: size, height: size)
+                .offset(x: layout.origin(square).x, y: layout.origin(square).y)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
     private func boardGesture(_ layout: BoardLayout) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                guard swapTargets.isEmpty else { return }
                 beginPress(at: value.startLocation, layout)
                 if dragFrom != nil, hypot(value.translation.width, value.translation.height) > 4 {
                     dragLocation = value.location
                 }
             }
             .onEnded { value in
+                if !swapTargets.isEmpty {
+                    pressStarted = false
+                    if interactive, let square = layout.square(at: value.location), swapTargets.contains(square) {
+                        onSwap(square)
+                    }
+                    return
+                }
                 let dragged = dragLocation != nil
                 let start = dragFrom
                 let target = layout.square(at: value.location)

@@ -99,7 +99,7 @@ public struct Position: Hashable {
     /// An attack whose battle can't be resolved yet because a rank is still hidden from this viewer.
     public internal(set) var pendingAttack: Move?
 
-    init(pieces ids: [PieceID]) {
+    public init(pieces ids: [PieceID]) {
         var cells = [PieceID?](repeating: nil, count: Square.size * Square.size)
         var pieces: [PieceID: PieceState] = [:]
         for id in ids {

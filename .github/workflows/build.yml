@@ -58,3 +58,51 @@ jobs:
           echo "---"
           cat guest.log
           [ "$host_status" -eq 0 ] && [ "$guest_status" -eq 0 ]
+
+      - name: 2v2 smoke test (four processes on this Mac)
+        # Informational, like the 1v1 smoke test above.
+        continue-on-error: true
+        run: |
+          bin="$(swift build -c release --show-bin-path)/PeerSmokeTest"
+          pids=()
+          for role in team-b team-c team-d; do
+            "$bin" "$role" > "$role.log" 2>&1 &
+            pids+=($!)
+          done
+          set +e
+          sleep 1
+          "$bin" team-a > team-a.log 2>&1
+          status=$?
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          for role in team-a team-b team-c team-d; do
+            echo "--- $role"
+            cat "$role.log"
+          done
+          [ "$status" -eq 0 ]
+
+  ios:
+    # The iPhone/iPad app, built with Xcode for the simulator and for devices (unsigned).
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode
+        run: xcodebuild -version
+
+      - name: Build for the iOS simulator
+        run: |
+          xcodebuild -project iOS/OfflineBarrage.xcodeproj -scheme OfflineBarrage \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Build for iPhone and iPad (unsigned)
+        run: |
+          xcodebuild -project iOS/OfflineBarrage.xcodeproj -scheme OfflineBarrage \
+            -destination 'generic/platform=iOS' -configuration Release -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: iOS code check without Xcode's iOS SDK (Mac Catalyst)
+        run: ./scripts/check-ios.sh

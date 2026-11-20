@@ -178,52 +178,143 @@ enum BattleText {
 
 /// Shown over the board for a moment after each battle.
 struct BattleCard: View {
-    let report: BattleReport
-    let localSide: Side
+    let title: String
+    let attackerSide: Side
+    let attackerRank: Rank
+    let attackerLabel: String
+    let defenderRank: Rank
+    let defenderLabel: String
+    let outcome: BattleOutcome
+    /// Smaller, for the other board in 2v2.
+    var compact = false
+    /// A one-line strip (iPhone: the other board's battles, shown at the top of the screen).
+    private var banner = false
+
+    func asBanner() -> BattleCard {
+        var card = self
+        card.banner = true
+        return card
+    }
+
+    init(report: BattleReport, localSide: Side) {
+        title = report.attackerSide == localSide ? "You attack!" : "You're attacked!"
+        attackerSide = report.attackerSide
+        attackerRank = report.attackerRank
+        defenderRank = report.defenderRank
+        outcome = report.outcome
+        attackerLabel = report.attackerSide == localSide ? "Your \(report.attackerRank.name)" : "Their \(report.attackerRank.name)"
+        defenderLabel = report.defenderSide == localSide ? "Your \(report.defenderRank.name)" : "Their \(report.defenderRank.name)"
+    }
+
+    /// A 2v2 battle as `viewer` sees it: on their own board, or on their partner's.
+    init(team report: TeamBattleReport, viewer: Seat, compact: Bool = false) {
+        let ownBoard = report.board == viewer.board
+        let ours = ownBoard ? viewer.side : viewer.partner.side
+        let possessive = ownBoard ? "Your" : "Teammate's"
+        if report.attackerSide == ours {
+            title = ownBoard ? "You attack!" : "Your teammate attacks!"
+        } else {
+            title = ownBoard ? "You're attacked!" : "Your teammate is attacked!"
+        }
+        attackerSide = report.attackerSide
+        attackerRank = report.attackerRank
+        defenderRank = report.defenderRank
+        outcome = report.outcome
+        attackerLabel = report.attackerSide == ours ? "\(possessive) \(report.attackerRank.name)" : "Their \(report.attackerRank.name)"
+        defenderLabel = report.attackerSide == ours ? "Their \(report.defenderRank.name)" : "\(possessive) \(report.defenderRank.name)"
+        self.compact = compact
+    }
+
+    private var defenderSide: Side { attackerSide.opposite }
 
     private func lost(_ attacker: Bool) -> Bool {
-        switch report.outcome {
+        switch outcome {
         case .attackerWins: return !attacker
         case .defenderWins: return attacker
         case .bothLose: return true
         }
     }
 
+    @ViewBuilder
     var body: some View {
-        VStack(spacing: 12) {
-            Text(report.attackerSide == localSide ? "You attack!" : "You're attacked!")
-                .font(.headline)
-                .foregroundColor(.secondary)
-            HStack(spacing: 18) {
-                fighter(side: report.attackerSide, rank: report.attackerRank, lost: lost(true))
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 26))
-                    .foregroundColor(.orange)
-                fighter(side: report.defenderSide, rank: report.defenderRank, lost: lost(false))
-            }
-            Text(BattleText.describe(attacker: report.attackerRank, defender: report.defenderRank, outcome: report.outcome))
-                .font(.title3.bold())
+        if banner {
+            bannerBody
+        } else {
+            cardBody
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 18)
+    }
+
+    private var bannerBody: some View {
+        HStack(spacing: 8) {
+            token(side: attackerSide, rank: attackerRank, lost: lost(true), size: 30)
+            Image(systemName: "bolt.fill")
+                .foregroundColor(.orange)
+            token(side: defenderSide, rank: defenderRank, lost: lost(false), size: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(BattleText.describe(attacker: attackerRank, defender: defenderRank, outcome: outcome))
+                    .font(.callout.bold())
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.regularMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.12)))
+        .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+    }
+
+    private func token(side: Side, rank: Rank, lost: Bool, size: CGFloat) -> some View {
+        PieceToken(token: TokenModel(side: side, rank: rank), size: size)
+            .opacity(lost ? 0.35 : 1)
+            .overlay {
+                if lost {
+                    Image(systemName: "xmark")
+                        .font(.system(size: size * 0.63, weight: .bold))
+                        .foregroundColor(.black.opacity(0.6))
+                }
+            }
+    }
+
+    private var cardBody: some View {
+        VStack(spacing: compact ? 8 : 12) {
+            Text(title)
+                .font(compact ? .subheadline.bold() : .headline)
+                .foregroundColor(.secondary)
+            HStack(spacing: compact ? 12 : 18) {
+                fighter(side: attackerSide, rank: attackerRank, label: attackerLabel, lost: lost(true))
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: compact ? 18 : 26))
+                    .foregroundColor(.orange)
+                fighter(side: defenderSide, rank: defenderRank, label: defenderLabel, lost: lost(false))
+            }
+            Text(BattleText.describe(attacker: attackerRank, defender: defenderRank, outcome: outcome))
+                .font(compact ? .callout.bold() : .title3.bold())
+        }
+        .padding(.horizontal, compact ? 16 : 26)
+        .padding(.vertical, compact ? 12 : 18)
         .background(RoundedRectangle(cornerRadius: 16).fill(.regularMaterial))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.12)))
         .shadow(color: .black.opacity(0.3), radius: 14, y: 4)
     }
 
-    private func fighter(side: Side, rank: Rank, lost: Bool) -> some View {
-        VStack(spacing: 6) {
-            PieceToken(token: TokenModel(side: side, rank: rank), size: 70)
+    private func fighter(side: Side, rank: Rank, label: String, lost: Bool) -> some View {
+        let size: CGFloat = compact ? 48 : 70
+        return VStack(spacing: 6) {
+            PieceToken(token: TokenModel(side: side, rank: rank), size: size)
                 .opacity(lost ? 0.35 : 1)
                 .overlay {
                     if lost {
                         Image(systemName: "xmark")
-                            .font(.system(size: 44, weight: .bold))
+                            .font(.system(size: size * 0.63, weight: .bold))
                             .foregroundColor(.black.opacity(0.6))
                     }
                 }
-            Text(side == localSide ? "Your \(rank.name)" : "Their \(rank.name)")
-                .font(.callout)
+            Text(label)
+                .font(compact ? .caption : .callout)
         }
     }
 }

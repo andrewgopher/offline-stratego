@@ -56,6 +56,21 @@ public enum Commitments {
         return hash("\(domain)|setup|\(gameID.uuidString)|\(body)")
     }
 
+    /// 2v2: a piece's commitment on one board in one epoch. A player starts a new epoch, with fresh
+    /// nonces for every piece, each time they swap, so nobody can tell which piece changed.
+    public static func teamDigest(gameID: UUID, board: BoardID, epoch: Int, piece: PieceID, secret: PieceSecret) -> String {
+        hash("\(domain)|team-piece|\(gameID.uuidString)|\(board.rawValue)|\(epoch)|\(piece.rawValue)|\(secret.rank.rawValue)|\(secret.nonce)")
+    }
+
+    /// 2v2: the lock-in digest of a seat's epoch-0 commitments.
+    public static func teamSetupDigest(gameID: UUID, seat: Seat, commitments: [PieceID: String]) -> String {
+        let body = commitments
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key.rawValue):\($0.value)" }
+            .joined(separator: ",")
+        return hash("\(domain)|team-setup|\(gameID.uuidString)|\(seat.board.rawValue)|\(seat.side.rawValue)|\(body)")
+    }
+
     public static func makeNonce() -> String {
         var generator = SystemRandomNumberGenerator()
         return (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &generator)) }.joined()
