@@ -29,15 +29,21 @@ mkdir -p dist
 STAGE="$(mktemp -d dist/.build-app.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# Each arch's binary is copied out right after it is built: newer SwiftPM versions (6.4+) put every
+# arch in the same .build/out/Products/Release folder, so the next build would overwrite it.
 binaries=()
 for arch in $ARCHS; do
     echo "==> Building for $arch"
     bin=""
     if swift build -c release --arch "$arch" --product OfflineBarrage; then
-        bin="$(swift build -c release --arch "$arch" --show-bin-path)/OfflineBarrage"
-        if [ ! -f "$bin" ]; then
-            echo "warning: swift build succeeded, but $bin doesn't exist" >&2
-            bin=""
+        built="$(swift build -c release --arch "$arch" --show-bin-path)/OfflineBarrage"
+        if [ ! -f "$built" ]; then
+            echo "warning: swift build succeeded, but $built doesn't exist" >&2
+        elif [ "$(lipo -archs "$built")" != "$arch" ]; then
+            echo "warning: $built is $(lipo -archs "$built"), not $arch" >&2
+        else
+            bin="$STAGE/OfflineBarrage-$arch"
+            cp "$built" "$bin"
         fi
     fi
     if [ -n "$bin" ]; then
