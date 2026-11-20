@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Test rules and match protocol
+        run: ./scripts/test.sh -c release
+
+      - name: Build app bundle
+        run: ./scripts/build-app.sh
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineBarrage-app
+          path: dist/OfflineBarrage.zip
+          retention-days: 30
+
+      - name: App launch smoke test
+        run: |
+          ./dist/OfflineBarrage.app/Contents/MacOS/OfflineBarrage > launch.log 2>&1 &
+          pid=$!
+          sleep 8
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "App launched and is still running."
+            kill "$pid"
+          else
+            echo "App exited during launch:"
+            cat launch.log
+            exit 1
+          fi
+
+      - name: Peer-to-peer smoke test (two processes on this Mac)
+        # Informational: CI runners may not allow local-network discovery.
+        continue-on-error: true
+        run: |
+          swift build -c release --product PeerSmokeTest
+          bin="$(swift build -c release --show-bin-path)/PeerSmokeTest"
+          "$bin" guest > guest.log 2>&1 &
+          guest=$!
+          set +e
+          "$bin" host > host.log 2>&1
+          host_status=$?
+          wait "$guest"
+          guest_status=$?
+          cat host.log
+          echo "---"
+          cat guest.log
+          [ "$host_status" -eq 0 ] && [ "$guest_status" -eq 0 ]

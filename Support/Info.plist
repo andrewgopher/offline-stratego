@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>OfflineBarrage</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.offlinebarrage.OfflineBarrage</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Offline Barrage</string>
+	<key>CFBundleDisplayName</key>
+	<string>Offline Barrage</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.board-games</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Offline Barrage uses peer-to-peer Wi-Fi to find and play against nearby Macs. No internet or Wi-Fi network is needed.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_offline-barrage._tcp</string>
+		<string>_offline-barrage._udp</string>
+	</array>
+</dict>
+</plist>
